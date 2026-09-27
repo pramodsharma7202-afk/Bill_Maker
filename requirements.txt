@@ -1,0 +1,5 @@
+python-telegram-bot==21.6
+openpyxl>=3.1,<4
+python-dotenv>=1.0,<2
+xlsx2html==0.6.4
+xhtml2pdf>=0.2.20,<0.3
