@@ -1,8 +1,9 @@
 """
 Telegram GST Bill Maker Bot
-============================
-Collects buyer + item details in chat, calculates GST, and sends back
-an editable Excel invoice and a PDF invoice styled after Hanuman.xlsx.
+===========================
+The Vercel webhook opens a stateless Telegram Mini App form and sends back an
+editable Excel invoice plus a PDF styled after Hanuman.xlsx. Local polling
+continues to support the chat-based wizard.
 
 SETUP
 -----
@@ -22,14 +23,21 @@ In Telegram, message your bot:
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 from datetime import date
-from urllib.parse import quote
 
-import httpx
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+    Update,
+    WebAppInfo,
+)
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -75,30 +83,10 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 ) = range(19)
 
 COUNTER_FILE = os.path.join(os.path.dirname(__file__), "invoice_counter.json")
-PERSISTENT_COUNTER_KEY = "bill-maker:invoice-counter"
 INVOICE_OUTPUT_DIR = os.environ.get("INVOICE_OUTPUT_DIR") or (
     "/tmp/generated_invoices" if os.environ.get("VERCEL") else
     os.path.join(os.path.dirname(__file__), "generated_invoices")
 )
-
-
-def _redis_configured() -> bool:
-    return bool(os.environ.get("UPSTASH_REDIS_REST_URL") and os.environ.get("UPSTASH_REDIS_REST_TOKEN"))
-
-
-async def _redis_command(*parts: object):
-    base_url = os.environ["UPSTASH_REDIS_REST_URL"].rstrip("/")
-    path = "/".join(quote(str(part), safe="") for part in parts)
-    async with httpx.AsyncClient(timeout=8) as client:
-        response = await client.get(
-            f"{base_url}/{path}",
-            headers={"Authorization": f"Bearer {os.environ['UPSTASH_REDIS_REST_TOKEN']}"},
-        )
-    response.raise_for_status()
-    payload = response.json()
-    if "error" in payload:
-        raise RuntimeError(f"Upstash Redis error: {payload['error']}")
-    return payload.get("result")
 
 
 def _template_invoice_no() -> int:
@@ -112,11 +100,7 @@ def _template_invoice_no() -> int:
 
 
 async def _next_invoice_no() -> int:
-    """Increment past both the saved counter and the sample template number."""
-    if _redis_configured():
-        await _redis_command("set", PERSISTENT_COUNTER_KEY, _template_invoice_no(), "NX")
-        return int(await _redis_command("incr", PERSISTENT_COUNTER_KEY))
-
+    """Increment the local polling bot's counter past the template number."""
     data = {"last": 0}
     if os.path.exists(COUNTER_FILE):
         try:
@@ -141,13 +125,6 @@ async def _record_manual_invoice_no(value: str) -> None:
         number = int(value)
     except ValueError:
         return
-    if _redis_configured():
-        await _redis_command("set", PERSISTENT_COUNTER_KEY, _template_invoice_no(), "NX")
-        current = int(await _redis_command("get", PERSISTENT_COUNTER_KEY) or 0)
-        if number > current:
-            await _redis_command("set", PERSISTENT_COUNTER_KEY, number)
-        return
-
     data = {"last": 0}
     if os.path.exists(COUNTER_FILE):
         try:
@@ -161,18 +138,21 @@ async def _record_manual_invoice_no(value: str) -> None:
 
 
 async def _reserve_invoice_no(value: str) -> bool:
-    if _redis_configured():
-        result = await _redis_command(
-            "set", f"bill-maker:invoice:{value}", "reserved", "NX", "EX", 3600
-        )
-        return result == "OK"
     stem = f"invoice_{value}"
     return not any(os.path.exists(os.path.join(INVOICE_OUTPUT_DIR, f"{stem}.{ext}")) for ext in ("xlsx", "pdf"))
 
 
-async def _finalize_invoice_no(value: str) -> None:
-    if _redis_configured():
-        await _redis_command("set", f"bill-maker:invoice:{value}", "done")
+def _invoice_form_url() -> str | None:
+    """Return the stable Vercel URL used by Telegram's Mini App button."""
+    domain = (
+        os.environ.get("VERCEL_PROJECT_PRODUCTION_URL")
+        or os.environ.get("VERCEL_URL")
+        or os.environ.get("INVOICE_APP_URL")
+    )
+    if not domain:
+        return None
+    base_url = domain if domain.startswith("https://") else f"https://{domain}"
+    return f"{base_url.rstrip('/')}/invoice-form.html"
 
 
 def _parse_float(text: str) -> float:
@@ -189,7 +169,6 @@ async def _deliver_invoice(message, invoice_data: dict) -> None:
         raise FileExistsError(f"Invoice number {invoice_data['invoice_no']} already has generated files.")
     generate_invoice_xlsx(invoice_data, xlsx_path)
     convert_xlsx_to_pdf(xlsx_path, pdf_path, invoice_data)
-    await _finalize_invoice_no(str(invoice_data["invoice_no"]))
     gst = invoice_data["gst"]
     caption = f"Invoice No. {invoice_data['invoice_no']}\nGrand Total: Rs. {gst['grand_total']:,.2f}"
     for file_path, label in ((xlsx_path, "Editable Excel invoice"), (pdf_path, "PDF invoice")):
@@ -206,12 +185,141 @@ async def _deliver_invoice(message, invoice_data: dict) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     context.user_data["items"] = []
+    form_url = _invoice_form_url()
+    if os.environ.get("VERCEL") and not form_url:
+        await update.message.reply_text(
+            "Invoice form URL is unavailable. Enable Vercel system environment "
+            "variables or set INVOICE_APP_URL to the production domain."
+        )
+        return ConversationHandler.END
+    if form_url:
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton("🧾 Open GST Invoice Form", web_app=WebAppInfo(url=form_url))]],
+            resize_keyboard=True,
+            is_persistent=True,
+        )
+        await update.message.reply_text(
+            "🧾 Tap the button below, fill the invoice form, and press Generate. "
+            "Your unfinished draft autosaves in Telegram CloudStorage.",
+            reply_markup=keyboard,
+        )
+        return ConversationHandler.END
+
     await update.message.reply_text(
         "🧾 New GST invoice form\n\n"
         "Invoice number? Send a number to use your own, or AUTO for the next number.",
         reply_markup=ReplyKeyboardRemove(),
     )
     return INVOICE_NO
+
+
+def _form_text(payload: dict, key: str, label: str, *, required=False, limit=250):
+    value = str(payload.get(key, "") or "").strip()
+    if required and not value:
+        raise ValueError(f"{label} is required.")
+    if len(value) > limit:
+        raise ValueError(f"{label} is too long (maximum {limit} characters).")
+    return value or None
+
+
+def _invoice_from_web_app(payload: dict, update: Update) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("The form data is not valid.")
+
+    raw_date = _form_text(payload, "invoice_date", "Invoice date", required=True, limit=10)
+    try:
+        invoice_date_value = date.fromisoformat(raw_date)
+    except ValueError as exc:
+        raise ValueError("Please select a valid invoice date.") from exc
+
+    raw_number = _form_text(payload, "invoice_no", "Invoice number", limit=24) or "AUTO"
+    if raw_number.casefold() in {"auto", "-", "blank"}:
+        # Telegram update IDs are unique for a bot, allowing no-database
+        # invoices to receive a unique identifier without a shared counter.
+        invoice_no = f"INV-{invoice_date_value:%y%m%d}-{update.update_id}"
+    elif re.fullmatch(r"[A-Za-z0-9_-]{1,24}", raw_number):
+        invoice_no = raw_number
+    else:
+        raise ValueError("Invoice number can use letters, numbers, _ and - only.")
+
+    invoice_date = invoice_date_value.strftime("%d-%m-%Y")
+
+    item_payloads = payload.get("items")
+    if not isinstance(item_payloads, list) or not 1 <= len(item_payloads) <= 11:
+        raise ValueError("Add between 1 and 11 items.")
+    items = []
+    for index, raw_item in enumerate(item_payloads, start=1):
+        if not isinstance(raw_item, dict):
+            raise ValueError(f"Item {index} is invalid.")
+        description = _form_text(raw_item, "description", f"Item {index} description", required=True, limit=180)
+        hsn = _form_text(raw_item, "hsn", f"Item {index} HSN/SAC", required=True, limit=32)
+        try:
+            qty = _parse_float(str(raw_item.get("qty", "")))
+            rate = _parse_float(str(raw_item.get("rate", "")))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Item {index} quantity and rate must be numbers.") from exc
+        if not (math.isfinite(qty) and math.isfinite(rate) and qty > 0 and rate > 0):
+            raise ValueError(f"Item {index} quantity and rate must be greater than zero.")
+        amount = qty * rate
+        if not math.isfinite(amount):
+            raise ValueError(f"Item {index} amount is too large.")
+        items.append({
+            "sl": index,
+            "description": description,
+            "hsn": hsn,
+            "qty": qty,
+            "rate": rate,
+            "amount": round(amount, 2),
+        })
+
+    gst_type = payload.get("gst_type")
+    if not isinstance(gst_type, str) or gst_type not in {"IGST", "CGST_SGST"}:
+        raise ValueError("Choose IGST or CGST + SGST.")
+    try:
+        gst_rate = _parse_float(str(payload.get("gst_rate", "")))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("GST rate must be a number.") from exc
+    if not 0 <= gst_rate <= 100:
+        raise ValueError("GST rate must be between 0 and 100.")
+
+    taxable_value = round(sum(item["amount"] for item in items), 2)
+    if not math.isfinite(taxable_value):
+        raise ValueError("The combined item value is too large.")
+    return {
+        "invoice_no": invoice_no,
+        "invoice_date": invoice_date,
+        "delivery_note": _form_text(payload, "delivery_note", "Delivery note", limit=100) or "-",
+        "payment_terms": _form_text(payload, "payment_terms", "Payment terms", limit=100) or "-",
+        "buyer_order_no": _form_text(payload, "buyer_order_no", "Buyer order number", limit=100) or "-",
+        "dispatch_doc_no": _form_text(payload, "dispatch_doc_no", "Dispatch document number", limit=100) or "-",
+        "vehicle_no": _form_text(payload, "vehicle_no", "Vehicle number", limit=50) or "-",
+        "destination": _form_text(payload, "destination", "Destination", limit=100) or "-",
+        "delivery_terms": _form_text(payload, "delivery_terms", "Delivery terms", limit=100) or "As agreed",
+        "buyer_name": _form_text(payload, "buyer_name", "Buyer name", required=True, limit=150),
+        "buyer_address": _form_text(payload, "buyer_address", "Buyer address", required=True, limit=500),
+        "buyer_gstin": _form_text(payload, "buyer_gstin", "Buyer GSTIN", limit=20),
+        "items": items,
+        "gst": calculate_gst(taxable_value, gst_rate, gst_type),
+    }
+
+
+async def web_app_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if not message or not message.web_app_data:
+        return
+    try:
+        payload = json.loads(message.web_app_data.data)
+        invoice_data = _invoice_from_web_app(payload, update)
+    except (json.JSONDecodeError, ValueError) as exc:
+        await message.reply_text(f"Form check: {exc} Please use /new to correct it.")
+        return
+
+    await _deliver_invoice(message, invoice_data)
+    await message.reply_text(
+        f"Excel aur PDF taiyaar hain. Invoice No. {invoice_data['invoice_no']}\n"
+        "Naya invoice banane ke liye /new bhejein.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
 
 
 async def invoice_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -448,11 +556,8 @@ async def report_handler_error(update: object, context: ContextTypes.DEFAULT_TYP
             logger.error("Could not send the invoice error notice to the user")
 
 
-def build_application(token: str, persistence=None) -> Application:
-    builder = Application.builder().token(token)
-    if persistence is not None:
-        builder = builder.persistence(persistence)
-    application = builder.build()
+def build_application(token: str) -> Application:
+    application = Application.builder().token(token).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start), CommandHandler("new", start)],
@@ -479,10 +584,11 @@ def build_application(token: str, persistence=None) -> Application:
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
-        name="invoice_conversation" if persistence is not None else None,
-        persistent=persistence is not None,
     )
     application.add_handler(conv_handler)
+    application.add_handler(
+        MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_invoice)
+    )
     application.add_error_handler(report_handler_error)
     return application
 

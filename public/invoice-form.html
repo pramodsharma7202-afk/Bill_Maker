@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="theme-color" content="#1f3864">
+  <title>GST Invoice Form</title>
+  <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+  <style>
+    :root { color-scheme: light; --navy:#1f3864; --blue:#315a91; --line:#d8e0ec; --muted:#667085; --bg:#f4f6fa; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:#172033; font:15px/1.45 Arial, sans-serif; }
+    .page { max-width:720px; margin:auto; padding:14px 12px 30px; }
+    header { background:var(--navy); color:white; border-radius:14px; padding:17px 18px; margin-bottom:12px; }
+    h1 { margin:0; font-size:20px; } header p { margin:5px 0 0; color:#dce7f8; font-size:13px; }
+    section { background:white; border:1px solid var(--line); border-radius:12px; padding:14px; margin:10px 0; }
+    h2 { font-size:15px; color:var(--navy); margin:0 0 12px; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    label { display:block; color:#344054; font-size:12px; font-weight:700; margin-bottom:4px; }
+    input, textarea, select { width:100%; border:1px solid #cbd5e1; border-radius:8px; background:white; padding:10px; color:#172033; font:15px Arial,sans-serif; outline:none; }
+    input:focus, textarea:focus, select:focus { border-color:var(--blue); box-shadow:0 0 0 2px #315a9120; }
+    textarea { min-height:68px; resize:vertical; }
+    .field { min-width:0; } .wide { grid-column:1 / -1; }
+    .hint { color:var(--muted); font-size:11px; margin:5px 0 0; }
+    .item { border:1px solid var(--line); border-radius:10px; padding:11px; margin:9px 0; background:#fbfcfe; }
+    .item-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:9px; color:var(--navy); font-weight:700; font-size:13px; }
+    .remove { border:0; background:#fff0f0; color:#b42318; border-radius:7px; padding:6px 9px; }
+    .item-grid { display:grid; grid-template-columns:1fr 1fr; gap:9px; }
+    .add { border:1px dashed #7890b2; color:var(--navy); background:#f7f9fc; border-radius:9px; width:100%; padding:10px; font-weight:700; }
+    .totals { color:#344054; background:#f7f9fc; padding:10px; border-radius:8px; margin-top:10px; font-size:13px; }
+    .actions { position:sticky; bottom:0; padding:10px 0 max(8px, env(safe-area-inset-bottom)); background:linear-gradient(#f4f6fa00,#f4f6fa 18%); }
+    .submit { border:0; border-radius:10px; background:var(--navy); color:white; width:100%; padding:14px; font-size:16px; font-weight:700; box-shadow:0 3px 10px #1f386433; }
+    #notice { display:none; background:#fff5e6; color:#7a4b00; border-radius:9px; padding:10px; margin:8px 0; font-size:13px; }
+    @media(max-width:430px) { .grid { gap:9px; } section { padding:12px; } input,textarea,select { padding:9px; font-size:14px; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <h1>GST Tax Invoice</h1>
+      <p>Seller details are fixed. Your draft is saved in Telegram while you fill this form.</p>
+    </header>
+    <div id="notice" role="status"></div>
+    <form id="invoice-form">
+      <section>
+        <h2>Invoice details</h2>
+        <div class="grid">
+          <div class="field"><label for="invoice_no">Invoice number</label><input id="invoice_no" name="invoice_no" value="AUTO" maxlength="24"><p class="hint">AUTO creates a unique number. You can enter your own series number.</p></div>
+          <div class="field"><label for="invoice_date">Invoice date</label><input id="invoice_date" name="invoice_date" type="date" required></div>
+          <div class="field"><label for="delivery_note">Delivery note</label><input id="delivery_note" name="delivery_note" maxlength="100"></div>
+          <div class="field"><label for="payment_terms">Payment terms</label><input id="payment_terms" name="payment_terms" maxlength="100"></div>
+          <div class="field"><label for="vehicle_no">Vehicle number</label><input id="vehicle_no" name="vehicle_no" maxlength="50"></div>
+          <div class="field"><label for="destination">Destination</label><input id="destination" name="destination" maxlength="100"></div>
+          <div class="field"><label for="buyer_order_no">Buyer's order number</label><input id="buyer_order_no" name="buyer_order_no" maxlength="100"></div>
+          <div class="field"><label for="dispatch_doc_no">Dispatch document number</label><input id="dispatch_doc_no" name="dispatch_doc_no" maxlength="100"></div>
+          <div class="field wide"><label for="delivery_terms">Terms of delivery</label><input id="delivery_terms" name="delivery_terms" value="As agreed" maxlength="100"></div>
+        </div>
+      </section>
+      <section>
+        <h2>Buyer (Bill To)</h2>
+        <div class="grid">
+          <div class="field wide"><label for="buyer_name">Buyer name</label><input id="buyer_name" name="buyer_name" required maxlength="150"></div>
+          <div class="field wide"><label for="buyer_address">Buyer address</label><textarea id="buyer_address" name="buyer_address" required maxlength="500"></textarea></div>
+          <div class="field wide"><label for="buyer_gstin">GSTIN/UIN (optional)</label><input id="buyer_gstin" name="buyer_gstin" maxlength="20"></div>
+        </div>
+      </section>
+      <section>
+        <h2>Goods</h2>
+        <div id="items"></div>
+        <button class="add" id="add-item" type="button">＋ Add another item</button>
+        <div class="totals" id="totals">Taxable value: Rs. 0.00</div>
+        <p class="hint">Quantity is in Qtl. For example, 12 tonnes = 120 Qtl.</p>
+      </section>
+      <section>
+        <h2>GST</h2>
+        <div class="grid">
+          <div class="field"><label for="gst_type">GST type</label><select id="gst_type" name="gst_type"><option value="IGST">IGST (inter-state)</option><option value="CGST_SGST">CGST + SGST (same-state)</option></select></div>
+          <div class="field"><label for="gst_rate">Total GST rate (%)</label><input id="gst_rate" name="gst_rate" type="number" min="0" max="100" step="0.01" value="5" required></div>
+        </div>
+      </section>
+      <div class="actions"><button class="submit" type="submit">Generate Excel + PDF</button></div>
+    </form>
+  </main>
+  <script>
+    (() => {
+      const tg = window.Telegram && window.Telegram.WebApp;
+      const form = document.getElementById('invoice-form');
+      const list = document.getElementById('items');
+      const notice = document.getElementById('notice');
+      const draftKey = 'hanuman-invoice-form-v1';
+      if (tg) { tg.ready(); tg.expand(); }
+
+      const localDate = () => {
+        const now = new Date();
+        now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+        return now.toISOString().slice(0, 10);
+      };
+      const escapeAttr = value => String(value || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      const addItem = (item = {}) => {
+        if (list.children.length >= 11) return;
+        const row = document.createElement('div');
+        row.className = 'item';
+        row.innerHTML = `<div class="item-top"><span>Item ${list.children.length + 1}</span><button class="remove" type="button">Remove</button></div>
+          <div class="item-grid">
+            <div class="field wide"><label>Description of goods</label><input data-field="description" required maxlength="180" value="${escapeAttr(item.description)}" placeholder="e.g. METHI (460 Bags)"></div>
+            <div class="field"><label>HSN/SAC</label><input data-field="hsn" required maxlength="32" value="${escapeAttr(item.hsn)}"></div>
+            <div class="field"><label>Quantity (Qtl.)</label><input data-field="qty" required type="number" min="0.001" step="0.001" value="${escapeAttr(item.qty)}"></div>
+            <div class="field wide"><label>Rate per Qtl. (Rs.)</label><input data-field="rate" required type="number" min="0.01" step="0.01" value="${escapeAttr(item.rate)}"></div>
+          </div>`;
+        row.querySelector('.remove').addEventListener('click', () => { if (list.children.length > 1) { row.remove(); renumber(); updateTotals(); saveDraft(); } });
+        list.appendChild(row);
+        renumber();
+      };
+      const renumber = () => {
+        [...list.children].forEach((row, i) => row.querySelector('.item-top span').textContent = `Item ${i + 1}`);
+        document.getElementById('add-item').disabled = list.children.length >= 11;
+      };
+      const getItems = () => [...list.children].map(row => Object.fromEntries(
+        [...row.querySelectorAll('[data-field]')].map(input => [input.dataset.field, input.value.trim()])
+      ));
+      const getDraft = () => ({
+        fields: Object.fromEntries([...form.querySelectorAll('[name]')].map(input => [input.name, input.value])),
+        items: getItems()
+      });
+      let saveTimer;
+      const localDraft = () => { try { return localStorage.getItem(draftKey); } catch (_) { return null; } };
+      const writeDraft = () => {
+        const value = JSON.stringify(getDraft());
+        if (tg && tg.CloudStorage && value.length <= 4000) {
+          tg.CloudStorage.setItem(draftKey, value, error => {
+            if (error) { try { localStorage.setItem(draftKey, value); } catch (_) {} }
+          });
+        } else {
+          try { localStorage.setItem(draftKey, value); } catch (_) {}
+        }
+      };
+      const saveDraft = () => { clearTimeout(saveTimer); saveTimer = setTimeout(writeDraft, 350); };
+      const updateTotals = () => {
+        const taxable = getItems().reduce((sum, item) => sum + (Number(item.qty) || 0) * (Number(item.rate) || 0), 0);
+        const rate = Number(form.elements.gst_rate.value) || 0;
+        document.getElementById('totals').textContent = `Taxable value: Rs. ${taxable.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})} · Grand total: Rs. ${(taxable * (1 + rate / 100)).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+      };
+      const restoreDraft = async () => {
+        let saved;
+        let raw = localDraft();
+        if (tg && tg.CloudStorage) {
+          raw = await new Promise(resolve => tg.CloudStorage.getItem(draftKey, (error, value) => resolve(error ? localDraft() : (value || localDraft()))));
+        }
+        try { saved = JSON.parse(raw || 'null'); } catch (_) { saved = null; }
+        if (saved && saved.fields) {
+          for (const [name, value] of Object.entries(saved.fields)) if (form.elements[name]) form.elements[name].value = value;
+          list.replaceChildren();
+          (saved.items || []).slice(0, 11).forEach(addItem);
+        }
+        if (!form.elements.invoice_date.value) form.elements.invoice_date.value = localDate();
+        if (!list.children.length) addItem();
+        updateTotals();
+      };
+      document.getElementById('add-item').addEventListener('click', () => { addItem(); saveDraft(); });
+      form.addEventListener('input', () => { saveDraft(); updateTotals(); });
+      form.addEventListener('change', () => { saveDraft(); updateTotals(); });
+      restoreDraft();
+
+      form.addEventListener('submit', event => {
+        event.preventDefault();
+        notice.style.display = 'none';
+        if (!form.reportValidity()) return;
+        if (!tg || typeof tg.sendData !== 'function') {
+          notice.textContent = 'Please open this form from the bot in Telegram.';
+          notice.style.display = 'block';
+          return;
+        }
+        const fields = Object.fromEntries([...form.querySelectorAll('[name]')].map(input => [input.name, input.value.trim()]));
+        const data = {...fields, items: getItems()};
+        const encoded = JSON.stringify(data);
+        if (new Blob([encoded]).size > 4000) {
+          notice.textContent = 'Form text is too long. Shorten the buyer address or item descriptions and try again.';
+          notice.style.display = 'block';
+          return;
+        }
+        clearTimeout(saveTimer);
+        const send = () => tg.sendData(encoded);
+        if (tg.CloudStorage) {
+          tg.CloudStorage.removeItem(draftKey, () => { try { localStorage.removeItem(draftKey); } catch (_) {} send(); });
+        } else {
+          try { localStorage.removeItem(draftKey); } catch (_) {}
+          send();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -9,7 +9,6 @@ from http.server import BaseHTTPRequestHandler
 from telegram import Update
 
 from main import build_application
-from upstash_persistence import UpstashPersistence
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
@@ -17,15 +16,13 @@ logger.setLevel(logging.WARNING)
 
 async def _process_update(payload: dict) -> None:
     token = os.environ["TELEGRAM_BOT_TOKEN"]
-    persistence = UpstashPersistence()
-    application = build_application(token, persistence=persistence)
+    application = build_application(token)
     initialized = False
     try:
         await application.initialize()
         initialized = True
         update = Update.de_json(payload, application.bot)
         await application.process_update(update)
-        await application.update_persistence()
     finally:
         if initialized:
             await application.shutdown()
