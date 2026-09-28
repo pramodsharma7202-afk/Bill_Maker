@@ -27,6 +27,7 @@ import math
 import os
 import re
 from datetime import date
+from http.server import BaseHTTPRequestHandler
 
 from dotenv import load_dotenv
 from telegram import (
@@ -616,6 +617,26 @@ def main() -> None:
     application = build_application(token)
     logger.info("Bot starting...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+class handler(BaseHTTPRequestHandler):
+    """Root-level Vercel entrypoint forwarding to the Telegram webhook.
+
+    Some Vercel builds select ``main.py`` before reading the custom entrypoint
+    from pyproject.toml. Exporting a handler here supports both discovery paths.
+    The import is deliberately lazy to avoid a circular import: api.webhook
+    imports ``build_application`` from this module.
+    """
+
+    def do_POST(self):
+        from api.webhook import handler as webhook_handler
+
+        webhook_handler.do_POST(self)
+
+    def do_GET(self):
+        from api.webhook import handler as webhook_handler
+
+        webhook_handler.do_GET(self)
 
 
 if __name__ == "__main__":
